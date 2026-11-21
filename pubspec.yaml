@@ -1,0 +1,31 @@
+name: squadron_build_hook
+description: Dart build hook to compile Squadron Workers during your app's build process.
+version: 0.1.0
+repository: https://github.com/d-markey/squadron_build_hook
+
+environment:
+  sdk: ^3.4.0
+
+dependencies:
+  synchronize: any
+  hooks: any
+  code_assets: any
+  data_assets: any
+
+dev_dependencies:
+  hooks_runner: any
+  lints: any
+  test: any
+  path: any
+  yaml: any
+
+topics:
+  - concurrency
+  - parallelism
+  - isolate
+  - multithread
+  - web-worker
+
+funding:
+  - https://github.com/sponsors/d-markey
+  - https://buymeacoffee.com/dmarkey
