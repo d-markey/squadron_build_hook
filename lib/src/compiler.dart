@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:path/path.dart' as path;
@@ -35,21 +36,22 @@ class WorkerCompiler {
     final depDir = Directory(path.dirname(resolvedDepfile));
     await depDir.create(recursive: true);
 
-    // Process defines: add 'squadron.' prefix
+    // Process defines: add 'squadron.' prefix unless key starts with '$' (verbatim)
     final defineArgs = <String>[];
     if (defines != null) {
       for (final entry in defines.entries) {
-        defineArgs.add('-Dsquadron.${entry.key}=${entry.value}');
+        if (entry.key.startsWith(r'$')) {
+          defineArgs.add('-D${entry.key.substring(1)}=${entry.value}');
+        } else {
+          defineArgs.add('-Dsquadron.${entry.key}=${entry.value}');
+        }
       }
     }
 
-    final optStr = optimizationLevel.trim();
-    final cleanOpt = (optStr.startsWith('-O') || optStr.startsWith('-o'))
-        ? optStr.substring(2)
-        : (optStr.startsWith('O') || optStr.startsWith('o'))
-            ? optStr.substring(1)
-            : optStr;
-    final optimLvl = cleanOpt.isEmpty ? '4' : cleanOpt;
+    final optimLvl = optimizationLevel.trim().isEmpty
+        ? OptimizationLevel.safe
+        : optimizationLevel;
+
     final args = [
       'compile',
       compiler,
@@ -79,7 +81,11 @@ class WorkerCompiler {
       if (await depFileObj.exists()) {
         try {
           final content = await depFileObj.readAsString();
-          dependencies.addAll(parseDepfile(content, projectRoot: projectRoot));
+          dependencies.addAll(parseDepfile(
+            content,
+            compiler: compiler,
+            projectRoot: projectRoot,
+          ));
         } catch (e) {
           logger.log('Warning: Failed to parse depfile $resolvedDepfile: $e');
         }
@@ -97,28 +103,55 @@ class WorkerCompiler {
     );
   }
 
-  /// Parses a Makefile/Ninja-style depfile content or a plain dependency list (.js.deps).
-  /// Format: `<target>: <dep1> <dep2> ...` or `<dep1>\n<dep2> ...`
-  /// Handles backslash-escaped newlines and spaces.
-  static List<String> parseDepfile(String content, {String? projectRoot}) {
+  /// Parses a depfile produced by [compiler] (or auto-detected):
+  /// - 'js' (dart2js .deps): line-delimited URIs / file paths.
+  /// - 'wasm' / 'exe': Makefile/Ninja format (`<target>: <dep1> <dep2> ...`).
+  /// Handles Windows drive letters, backslash-escaped newlines, spaces, and path separators.
+  static List<String> parseDepfile(
+    String content, {
+    String? compiler,
+    String? projectRoot,
+  }) {
     final deps = <String>[];
+    if (content.trim().isEmpty) return deps;
+
+    final isJs = compiler == 'js' ||
+        (compiler == null &&
+            content.trimLeft().split('\n').first.trim().startsWith('file://'));
+
+    if (isJs) {
+      for (final rawLine in const LineSplitter().convert(content)) {
+        final line = rawLine.trim();
+        if (line.isEmpty) continue;
+        deps.add(_normalizeDepPath(line, projectRoot));
+      }
+      return deps;
+    }
+
     final normalized = content.replaceAll(RegExp(r'\\(?:\r?\n|\r)'), ' ');
-    final colonIdx = normalized.indexOf(':');
-    final rhs = colonIdx != -1
-        ? normalized.substring(colonIdx + 1).trim()
+    final match = RegExp(r'(?<!\\):\s+').firstMatch(normalized);
+    final rhs = match != null
+        ? normalized.substring(match.end).trim()
         : normalized.trim();
     if (rhs.isEmpty) return deps;
 
     final sb = StringBuffer();
-    bool escaped = false;
-
     for (int i = 0; i < rhs.length; i++) {
       final c = rhs[i];
-      if (escaped) {
-        sb.write(c);
-        escaped = false;
-      } else if (c == '\\') {
-        escaped = true;
+      if (c == '\\' && i + 1 < rhs.length) {
+        final next = rhs[i + 1];
+        if (next == ' ' || next == '\t') {
+          sb.write(next);
+          i++;
+        } else if (next == '\\') {
+          sb.write('\\');
+          i++;
+        } else if (next == ':') {
+          sb.write(':');
+          i++;
+        } else {
+          sb.write('\\');
+        }
       } else if (c == ' ' || c == '\t' || c == '\r' || c == '\n') {
         if (sb.isNotEmpty) {
           deps.add(_normalizeDepPath(sb.toString(), projectRoot));
@@ -137,6 +170,10 @@ class WorkerCompiler {
 
   static String _normalizeDepPath(String p, String? projectRoot) {
     var clean = p.trim();
+    if ((clean.startsWith('"') && clean.endsWith('"')) ||
+        (clean.startsWith("'") && clean.endsWith("'"))) {
+      clean = clean.substring(1, clean.length - 1).trim();
+    }
     if (clean.startsWith('file://')) {
       clean = Uri.parse(clean).toFilePath();
     }
@@ -164,4 +201,34 @@ class CompilationResult {
   final String? depfilePath;
 
   bool get success => exitCode == 0;
+}
+
+sealed class OptimizationLevel {
+  static const none = '0';
+  static const def = '1';
+  static const safe = '2';
+  static const unsafe = '3';
+  static const aggressive = '4';
+
+  static String parse(Object? level) {
+    if (level == null) return none;
+    final s = level.toString().trim();
+    if (s.isEmpty) return none;
+    if (int.tryParse(s) != null) return s;
+    switch (s.toLowerCase()) {
+      case 'none':
+        return none;
+      case 'def':
+      case 'default':
+        return def;
+      case 'safe':
+        return safe;
+      case 'unsafe':
+        return unsafe;
+      case 'aggressive':
+        return aggressive;
+      default:
+        return level.toString();
+    }
+  }
 }

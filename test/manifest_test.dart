@@ -94,9 +94,8 @@ workers:
   - source: lib/services/service_b.dart
     targets:
       - compiler: js
-        optimization-level: "O1"
+        optimization-level: 1
       - compiler: wasm
-        optimization-level: "-O2"
 ''');
 
       final manifest = await SquadronManifest.load(manifestFile);
@@ -119,12 +118,50 @@ workers:
 
       // Worker B
       final workerB = manifest.workers[1];
-      expect(workerB.optimizationLevel, equals(''));
+      expect(workerB.optimizationLevel, equals('2'));
       expect(workerB.targets, hasLength(2));
       expect(workerB.targets[0].compiler, equals('js'));
       expect(workerB.targets[0].optimizationLevel, equals('1'));
       expect(workerB.targets[1].compiler, equals('wasm'));
-      expect(workerB.targets[1].optimizationLevel, equals('2'));
+      expect(workerB.targets[1].optimizationLevel, equals('2')); // default
+    });
+
+    test(
+        'supports named optimization levels: none, default, safe, unsafe, aggressive',
+        () async {
+      final manifestFile =
+          File(path.join(tempDir.path, 'squadron.manifest.yaml'))
+            ..writeAsStringSync('''
+workers:
+  - source: lib/services/service_named.dart
+    optimization-level: safe
+    targets:
+      - compiler: js
+        optimization-level: aggressive
+      - compiler: wasm
+        optimization-level: unsafe
+      - compiler: exe
+        optimization-level: none
+  - source: lib/services/service_default.dart
+    targets:
+      - compiler: js
+        optimization-level: default
+      - compiler: wasm
+''');
+
+      final manifest = await SquadronManifest.load(manifestFile);
+      expect(manifest, isNotNull);
+
+      final wNamed = manifest!.workers[0];
+      expect(wNamed.optimizationLevel, equals('2')); // safe -> 2
+      expect(
+          wNamed.targets[0].optimizationLevel, equals('4')); // aggressive -> 4
+      expect(wNamed.targets[1].optimizationLevel, equals('3')); // unsafe -> 3
+      expect(wNamed.targets[2].optimizationLevel, equals('0')); // none -> 0
+
+      final wDef = manifest.workers[1];
+      expect(wDef.targets[0].optimizationLevel, equals('1')); // default -> 1
+      expect(wDef.targets[1].optimizationLevel, equals('2')); // omitted
     });
 
     test('supports top-level defines presets and worker/target references',
@@ -213,6 +250,42 @@ workers:
             'verbose': '1',
             'custom_key': 'custom_val',
           }));
+    });
+
+    test('supports verbatim defines starting with \$', () async {
+      final manifestFile =
+          File(path.join(tempDir.path, 'squadron.manifest.yaml'))
+            ..writeAsStringSync('''
+defines:
+  shared:
+    \$squadron.exact: true
+    \$custom_flag: 42
+    regular: value
+
+workers:
+  - source: lib/services/service.dart
+    defines:
+      - shared
+      - \$worker_flag: worker_val
+    targets:
+      - compiler: js
+        defines:
+          \$target_flag: target_val
+''');
+
+      final manifest = await SquadronManifest.load(manifestFile);
+      expect(manifest, isNotNull);
+      final shared = manifest!.defines['shared']!;
+      expect(shared['\$squadron.exact'], equals('true'));
+      expect(shared['\$custom_flag'], equals('42'));
+      expect(shared['regular'], equals('value'));
+
+      final target = manifest.workers[0].targets[0];
+      expect(target.defines['\$squadron.exact'], equals('true'));
+      expect(target.defines['\$custom_flag'], equals('42'));
+      expect(target.defines['regular'], equals('value'));
+      expect(target.defines['\$worker_flag'], equals('worker_val'));
+      expect(target.defines['\$target_flag'], equals('target_val'));
     });
   });
 }

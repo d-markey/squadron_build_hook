@@ -5,7 +5,7 @@
 - Multi-target compilation support for JavaScript (`js`), WebAssembly (`wasm`), and native standalone executables (`exe`).
 - Declarative configuration via `squadron.manifest.yaml` (or `squadron.manifest`).
 - Reusable named `outputs` groups and named shared `defines` presets.
-- Flexible compiler define injection (with automatic `squadron.` prefixing) and configurable `optimization-level` (accepting numbers or strings).
+- Flexible compiler define injection (with automatic `squadron.` prefixing or verbatim defines prefixed with `$`) and configurable `optimization-level` (accepting numbers, strings, or named levels: `none`, `default`, `safe`, `unsafe`, `aggressive`).
 - Smart diagnostic-driven heuristics to discover worker companion entry points by naming convention and endpoint usage analysis.
 - Dependency tracking and incremental rebuild cache invalidation via `.d` and `.deps` depfile parsing.
 - Semaphore-regulated concurrent worker compilation.

@@ -11,68 +11,158 @@ import 'heuristics.dart';
 import 'manifest.dart';
 import 'utils.dart';
 
-Future<void> runStandalone({int concurrency = 2}) async {
-  final mainLogger = getLogger();
+class StandaloneBuildResult {
+  const StandaloneBuildResult({
+    required this.workersLoaded,
+    required this.totalTargets,
+    required this.compiledTargets,
+    required this.workersNotCompiled,
+  });
+
+  final int workersLoaded;
+  final int totalTargets;
+  final int compiledTargets;
+  final List<String> workersNotCompiled;
+
+  bool get success =>
+      workersLoaded > 0 &&
+      workersNotCompiled.isEmpty &&
+      compiledTargets == totalTargets;
+}
+
+class WorkerResolutionResult {
+  const WorkerResolutionResult({
+    required this.associatedTargetsCount,
+    required this.targetsToCompile,
+    required this.hasAmbiguity,
+    this.ambiguityMessage,
+  });
+
+  final int associatedTargetsCount;
+  final List<CompilationTarget> targetsToCompile;
+  final bool hasAmbiguity;
+  final String? ambiguityMessage;
+}
+
+Future<StandaloneBuildResult> runStandalone({
+  int concurrency = 2,
+  BuildLogger? logger,
+}) async {
+  final mainLogger = logger ?? getLogger();
   final pckRoot = await SquadronManifest.findPackageRoot();
   final manifest = await SquadronManifest.load(pckRoot);
   if (manifest == null) {
     mainLogger.log('No squadron.manifest[.yaml] found in $pckRoot');
-    return;
-  } else {
-    mainLogger.log(
-        'Loaded ${manifest.workers.length} workers from ${path.basename(manifest.manifestFile.path)}.');
+    return const StandaloneBuildResult(
+      workersLoaded: 0,
+      totalTargets: 0,
+      compiledTargets: 0,
+      workersNotCompiled: [],
+    );
   }
+
+  mainLogger.log(
+      'Loaded ${manifest.workers.length} workers from ${path.basename(manifest.manifestFile.path)}.');
 
   final analyzer = DartFileAnalyzer();
   final compiler = WorkerCompiler(projectRoot: pckRoot);
   final semaphore = Semaphore(concurrency, maxCount: concurrency);
 
-  Future<void> processWorker(WorkerDefinition worker) async {
-    final logger = getLogger(tag: path.basename(worker.source));
+  int totalAssociatedTargets = 0;
+  int totalCompiledTargets = 0;
+  final notCompiledWorkers = <String>[];
 
-    final targets = await _resolveWorkerTargets(
+  Future<void> processWorker(WorkerDefinition worker) async {
+    final workerLogger = getLogger(tag: path.basename(worker.source));
+
+    final resolution = await _resolveWorkerTargets(
       worker,
       projectRoot: pckRoot,
       manifestOutputs: manifest.outputs,
-      logger: logger,
+      logger: workerLogger,
       analyzer: analyzer,
+      throwOnAmbiguity: false,
     );
 
-    for (final target in targets) {
-      final lock = await semaphore.enter();
-      try {
-        logger.log(
-            'Standalone: Compiling [${target.compiler}] ${target.source} -> ${target.output}');
-        final result = await compiler.compile(
-          compiler: target.compiler,
-          source: target.source,
-          output: target.output,
-          defines: target.defines,
-          optimizationLevel: target.optimizationLevel,
-          logger: logger,
-        );
-        if (result.exitCode != 0) {
-          logger.logAndThrow(
-              'Failed to compile [${target.compiler}] ${target.source} with exit code ${result.exitCode}');
+    int workerCompiledCount = 0;
+    bool compilationFailed = false;
+
+    if (!resolution.hasAmbiguity) {
+      for (final target in resolution.targetsToCompile) {
+        final lock = await semaphore.enter();
+        try {
+          workerLogger.log(
+              'Standalone: Compiling [${target.compiler}] ${target.source} -> ${target.output}');
+          final result = await compiler.compile(
+            compiler: target.compiler,
+            source: target.source,
+            output: target.output,
+            defines: target.defines,
+            optimizationLevel: target.optimizationLevel,
+            logger: workerLogger,
+          );
+          if (result.exitCode != 0) {
+            compilationFailed = true;
+            workerLogger.log(
+                'Standalone: Failed to compile [${target.compiler}] ${target.source} with exit code ${result.exitCode}');
+          } else {
+            workerCompiledCount++;
+            workerLogger.log(
+                'Standalone: Target produced ${result.dependencies.length} dependencies');
+          }
+        } catch (e) {
+          compilationFailed = true;
+          workerLogger.log(
+              'Standalone: Error compiling [${target.compiler}] ${target.source}: $e');
+        } finally {
+          lock.release();
         }
-        logger.log(
-            'Standalone: Target produced ${result.dependencies.length} dependencies');
-      } finally {
-        lock.release();
       }
+    } else {
+      workerLogger.log(
+          'Standalone: Skipping worker ${worker.name} due to ambiguity: ${resolution.ambiguityMessage}');
+    }
+
+    final isCompiled = !resolution.hasAmbiguity &&
+        !compilationFailed &&
+        resolution.associatedTargetsCount > 0 &&
+        workerCompiledCount == resolution.associatedTargetsCount;
+
+    totalAssociatedTargets += resolution.associatedTargetsCount;
+    totalCompiledTargets += workerCompiledCount;
+    if (!isCompiled) {
+      notCompiledWorkers.add(worker.name);
     }
   }
 
   // Launch all workers concurrently, regulated by the semaphore
   await Future.wait(manifest.workers.map(processWorker));
 
-  mainLogger.log('Standalone build completed successfully.');
+  mainLogger.log('Standalone build summary:');
+  mainLogger.log('  * Workers loaded: ${manifest.workers.length}');
+  mainLogger.log('  * Total associated targets: $totalAssociatedTargets');
+  mainLogger.log('  * Targets compiled: $totalCompiledTargets');
+  if (notCompiledWorkers.isNotEmpty) {
+    mainLogger.log('  * Workers not compiled (${notCompiledWorkers.length}):');
+    for (final name in notCompiledWorkers) {
+      mainLogger.log('    - $name');
+    }
+  } else {
+    mainLogger.log('Standalone build completed successfully.');
+  }
+
+  return StandaloneBuildResult(
+    workersLoaded: manifest.workers.length,
+    totalTargets: totalAssociatedTargets,
+    compiledTargets: totalCompiledTargets,
+    workersNotCompiled: notCompiledWorkers,
+  );
 }
 
 Future<void> runSquadronBuildHook(List<String> args,
-    {int concurrency = 2}) async {
+    {int concurrency = 2, BuildLogger? logger}) async {
   await build(args, (input, output) async {
-    final mainLogger = getLogger();
+    final mainLogger = logger ?? getLogger();
     mainLogger.log('Squadron build hook started...');
 
     final pckRoot = File(input.packageRoot.toFilePath()).absolute.path;
@@ -100,15 +190,38 @@ Future<void> runSquadronBuildHook(List<String> args,
 
     Future<void> processWorker(WorkerDefinition worker) async {
       final logger = getLogger(tag: path.basename(worker.source));
-      final targets = await _resolveWorkerTargets(
+
+      final workerSrcFile = resolveFile(worker.source, pckRoot);
+      if (workerSrcFile == null) {
+        logger.logAndThrow('Worker source file not found: ${worker.source}');
+      }
+
+      final resolution = await _resolveWorkerTargets(
         worker,
         projectRoot: pckRoot,
         manifestOutputs: manifest.outputs,
         logger: logger,
         analyzer: analyzer,
+        throwOnAmbiguity: true,
       );
 
-      for (final target in targets) {
+      if (resolution.hasAmbiguity) {
+        logger.logAndThrow(resolution.ambiguityMessage ??
+            'Ambiguous target for worker ${worker.name}');
+      }
+
+      if (worker.targets.isNotEmpty &&
+          resolution.targetsToCompile.length < worker.targets.length) {
+        logger.logAndThrow(
+            'Worker ${worker.name} has missing/unresolvable targets: expected ${worker.targets.length}, resolved ${resolution.targetsToCompile.length}');
+      }
+
+      if (resolution.targetsToCompile.isEmpty) {
+        logger.logAndThrow(
+            'No valid compilation targets found for worker ${worker.name}');
+      }
+
+      for (final target in resolution.targetsToCompile) {
         final lock = await semaphore.enter();
         try {
           logger.log(
@@ -173,12 +286,13 @@ Future<void> runSquadronBuildHook(List<String> args,
 /// 2. If the manifest has valid source but empty output, directly infer output without diagnostics.
 /// 3. If the manifest is partial (no targets) or wrong (source file doesn't exist),
 ///    run worker diagnostics, report ambiguities, and only compile if exactly one candidate is found.
-Future<List<CompilationTarget>> _resolveWorkerTargets(
+Future<WorkerResolutionResult> _resolveWorkerTargets(
   WorkerDefinition worker, {
   required String projectRoot,
   required Map<String, Map<String, String>> manifestOutputs,
   required BuildLogger logger,
   DartFileAnalyzer? analyzer,
+  bool throwOnAmbiguity = false,
 }) async {
   final resolvedTargets = <CompilationTarget>[];
   bool needsDiagnostics = false;
@@ -219,7 +333,11 @@ Future<List<CompilationTarget>> _resolveWorkerTargets(
 
   // If manifest was fully valid, return directly without running diagnostics
   if (!needsDiagnostics && resolvedTargets.length == worker.targets.length) {
-    return resolvedTargets;
+    return WorkerResolutionResult(
+      associatedTargetsCount: worker.targets.length,
+      targetsToCompile: resolvedTargets,
+      hasAmbiguity: false,
+    );
   }
 
   // Otherwise, run diagnostics for this worker to report errors/discoveries
@@ -238,18 +356,39 @@ Future<List<CompilationTarget>> _resolveWorkerTargets(
     outputDirs: outputDirs,
     analyzer: analyzer,
   );
-  final compiledTargets = <CompilationTarget>[];
 
+  final ambiguousGroups =
+      heuristicGroups.where((g) => g.candidates.length > 1).toList();
+
+  if (ambiguousGroups.isNotEmpty) {
+    final msg = ambiguousGroups.map((g) {
+      final candidates = g.candidates.map((c) => c.source).join(', ');
+      return 'Ambiguous target [${g.compiler}] with ${g.candidates.length} candidates ($candidates)';
+    }).join('; ');
+
+    logger.log('Ambiguity detected for worker ${worker.name}: $msg');
+
+    if (throwOnAmbiguity) {
+      logger.logAndThrow('Worker ${worker.name} cannot be compiled: $msg');
+    }
+
+    final associatedCount = worker.targets.isNotEmpty
+        ? worker.targets.length
+        : heuristicGroups.where((g) => g.candidates.isNotEmpty).length;
+
+    return WorkerResolutionResult(
+      associatedTargetsCount: associatedCount,
+      targetsToCompile: const [],
+      hasAmbiguity: true,
+      ambiguityMessage: msg,
+    );
+  }
+
+  final compiledTargets = <CompilationTarget>[];
   for (final group in heuristicGroups) {
     if (group.candidates.isEmpty) {
       logger.log(
-        'Skipping [${group.compiler}]: '
-        'No entrypoint candidate found.',
-      );
-    } else if (group.candidates.length > 1) {
-      logger.log(
-        'Skipping [${group.compiler}]: '
-        'Ambiguous target with ${group.candidates.length} candidates.',
+        'Skipping [${group.compiler}]: No entrypoint candidate found.',
       );
     } else {
       final c = group.candidates.first;
@@ -265,7 +404,15 @@ Future<List<CompilationTarget>> _resolveWorkerTargets(
     }
   }
 
-  return compiledTargets;
+  final associatedCount = worker.targets.isNotEmpty
+      ? worker.targets.length
+      : compiledTargets.length;
+
+  return WorkerResolutionResult(
+    associatedTargetsCount: associatedCount,
+    targetsToCompile: compiledTargets,
+    hasAmbiguity: false,
+  );
 }
 
 void _registerDependencyUri(String depPath, Set<String> dependencies) {
@@ -275,7 +422,7 @@ void _registerDependencyUri(String depPath, Set<String> dependencies) {
   if (file == null) return;
 
   // Ignore Dart SDK internal libraries/snapshots
-  final normalizedPath = file.path.toLowerCase();
+  final normalizedPath = file.path.toLowerCase().replaceAll('\\', '/');
   if (normalizedPath.contains('/dart-sdk/') ||
       normalizedPath.contains('/lib/_internal/')) {
     return;

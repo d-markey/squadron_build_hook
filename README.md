@@ -210,7 +210,14 @@ workers:
 
 ### <a name="defines_and_opts"></a>Inline Defines & Optimization Levels
 
-You can also pass inline custom Dart defines and compiler optimization levels directly per target or per worker (`optimization-level` accepts either a number like `4` or a string like `'4'`):
+You can also pass inline custom Dart defines and compiler optimization levels directly per target or per worker.
+
+`optimization-level` accepts numbers (`0`–`4`), numeric strings, or explicit named levels:
+* `none` &rarr; `0`
+* `default` &rarr; `1`
+* `safe` &rarr; `2`
+* `unsafe` &rarr; `3`
+* `aggressive` &rarr; `4`
 
 ```yaml
 workers:
@@ -219,11 +226,13 @@ workers:
       # Automatically prefixed as -Dsquadron.production=true
       production: true
       enable_profiling: false
+      # Prefix with '$' for verbatim Dart defines (e.g. -Dcustom_flag=true)
+      $custom_flag: true
     targets:
       - compiler: js
-        optimization-level: 4 # number or string
+        optimization-level: aggressive # or '4', or 4
       - compiler: wasm
-        optimization-level: 2
+        optimization-level: safe       # or '2', or 2
 ```
 
 ---

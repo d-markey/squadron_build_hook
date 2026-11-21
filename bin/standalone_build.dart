@@ -11,7 +11,10 @@ void main(List<String> args) async {
   }
   try {
     Directory.current = targetDir;
-    await runStandalone();
+    final result = await runStandalone();
+    if (!result.success) {
+      exitCode = 1;
+    }
   } finally {
     Directory.current = initialDir;
   }

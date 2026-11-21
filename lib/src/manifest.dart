@@ -3,6 +3,8 @@ import 'dart:io';
 import 'package:path/path.dart' as path;
 import 'package:yaml/yaml.dart';
 
+import 'compiler.dart';
+
 class CompilationTarget {
   CompilationTarget({
     required this.compiler,
@@ -64,11 +66,11 @@ class CompilationTarget {
   final String optimizationLevel;
 
   static CompilationTarget fromMap(
-    Map map,
-    Map<String, String> defaultDefines, [
-    String? defaultOptLevel,
+    Map map, {
+    required String defaultOptLevel,
+    required Map<String, String> defaultDefines,
     Map<String, Map<String, String>>? manifestDefines,
-  ]) {
+  }) {
     final mergedDefines = <String, String>{};
     SquadronManifest._loadDefines(
       map['defines'],
@@ -77,8 +79,9 @@ class CompilationTarget {
     );
     mergedDefines.addAll(defaultDefines);
 
-    final optLevel =
-        map['optimization-level']?.toString() ?? defaultOptLevel ?? '';
+    final optLevel = map.containsKey('optimization-level')
+        ? OptimizationLevel.parse(map['optimization-level'])
+        : defaultOptLevel;
 
     return CompilationTarget(
       compiler: (map['compiler'] as String?) ?? '',
@@ -92,13 +95,17 @@ class CompilationTarget {
 
 class WorkerDefinition {
   WorkerDefinition({
+    String? name,
     required this.source,
     required this.targets,
     this.outputs,
     this.defines = const {},
     this.optimizationLevel = '',
-  });
+  }) : name = (name != null && name.trim().isNotEmpty)
+            ? name.trim()
+            : (source.trim().isNotEmpty ? source.trim() : 'unknown');
 
+  final String name;
   final String source;
   final List<CompilationTarget> targets;
   final String? outputs;
@@ -115,19 +122,22 @@ class WorkerDefinition {
       defaultDefines,
       manifestDefines,
     );
-    final defaultOptLevel = map['optimization-level']?.toString() ?? '';
+    final defaultOptLevel = map.containsKey('optimization-level')
+        ? OptimizationLevel.parse(map['optimization-level'])
+        : OptimizationLevel.safe;
 
     final targetsList = (map['targets'] as List?)
             ?.map((t) => CompilationTarget.fromMap(
                   t as Map,
-                  defaultDefines,
-                  defaultOptLevel,
-                  manifestDefines,
+                  manifestDefines: manifestDefines,
+                  defaultDefines: defaultDefines,
+                  defaultOptLevel: defaultOptLevel,
                 ))
             .toList() ??
         const [];
 
     return WorkerDefinition(
+      name: map['name'] as String?,
       source: (map['source'] as String?) ?? '',
       targets: targetsList,
       outputs: map['outputs'] as String?,
@@ -168,6 +178,23 @@ class SquadronManifest {
     return dir.path;
   }
 
+  static const _squadronPrefix = 'squadron.';
+  static const _verbatimPrefix = r'$';
+
+  static String _normalizeDefineKey(String key) {
+    key = key.trim();
+    if (key.startsWith(_verbatimPrefix)) {
+      // Verbatim symbol: keep '$' prefix so compiler.dart knows not to append 'squadron.'
+      return key;
+    } else if (key.startsWith(_squadronPrefix) &&
+        key.length > _squadronPrefix.length) {
+      // Normalize by removing "squadron."
+      return key.substring(_squadronPrefix.length);
+    } else {
+      return key;
+    }
+  }
+
   static void _loadDefines(
     Object? rawDefinesOrMap,
     Map<String, String> mergedDefines, [
@@ -206,11 +233,7 @@ class SquadronManifest {
           continue;
         }
 
-        var key = keyStr;
-        if (key.startsWith('squadron.')) {
-          // normalize keys (remove "squadron.")
-          key = key.substring('squadron.'.length);
-        }
+        final key = _normalizeDefineKey(keyStr);
         final val = entry.value;
         if (val == null || val.toString().isEmpty) {
           // Empty value (e.g. "no_internal_logging:") removes the symbol
@@ -228,33 +251,7 @@ class SquadronManifest {
 
     void addGroup(String name, Object? val) {
       final map = result.putIfAbsent(name, () => <String, String>{});
-      if (val is Map) {
-        for (final entry in val.entries) {
-          var key = entry.key.toString();
-          if (key.startsWith('squadron.')) {
-            key = key.substring('squadron.'.length);
-          }
-          final v = entry.value;
-          if (v != null && v.toString().isNotEmpty) {
-            map[key] = v.toString();
-          }
-        }
-      } else if (val is List) {
-        for (final item in val) {
-          if (item is Map) {
-            for (final entry in item.entries) {
-              var key = entry.key.toString();
-              if (key.startsWith('squadron.')) {
-                key = key.substring('squadron.'.length);
-              }
-              final v = entry.value;
-              if (v != null && v.toString().isNotEmpty) {
-                map[key] = v.toString();
-              }
-            }
-          }
-        }
-      }
+      _loadDefines(val, map);
     }
 
     if (raw is Map) {
