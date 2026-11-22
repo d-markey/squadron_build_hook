@@ -6,7 +6,7 @@ import 'dart:io';
 import 'package:path/path.dart' as path;
 import 'package:test/test.dart';
 
-import '../lib/src/heuristics.dart';
+import '../lib/src/heuristics/heuristics.dart';
 import '../lib/src/manifest.dart';
 
 void main() {

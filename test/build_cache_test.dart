@@ -19,17 +19,18 @@ void main() {
       }
     });
 
-    test('computeBytesHash & computeFileHash produce consistent hashes', () async {
+    test('computeFileHash produce consistent hashes', () async {
+      final cache = BuildCache();
       final file = File(path.join(tempDir.path, 'sample.txt'))
         ..writeAsStringSync('Hello World');
 
-      final hash1 = await computeFileHash(file);
-      final hash2 = await computeFileHash(file);
+      final hash1 = await cache.computeFileHash(file);
+      final hash2 = await cache.computeFileHash(file);
       expect(hash1, equals(hash2));
       expect(hash1, isNot(equals(0)));
 
       file.writeAsStringSync('Hello World Modified');
-      final hash3 = await computeFileHash(file);
+      final hash3 = await cache.computeFileHash(file);
       expect(hash3, isNot(equals(hash1)));
     });
 
@@ -137,6 +138,45 @@ void main() {
         await cache.isTargetUpToDate(targetChangedDefines, projectRoot: tempDir.path),
         isFalse,
       );
+    });
+
+    test('BuildCache internal file hash cache reuses cached hashes for shared dependencies', () async {
+      final sharedDep = File(path.join(tempDir.path, 'lib/common.dart'))
+        ..createSync(recursive: true)
+        ..writeAsStringSync('class Common {}');
+
+      final target1 = CompilationTarget(
+        compiler: 'js',
+        source: 'lib/worker1.dart',
+        output: 'web/worker1.js',
+        defines: {},
+        optimizationLevel: '2',
+      );
+
+      final target2 = CompilationTarget(
+        compiler: 'js',
+        source: 'lib/worker2.dart',
+        output: 'web/worker2.js',
+        defines: {},
+        optimizationLevel: '2',
+      );
+
+      final cache = BuildCache();
+      await cache.updateTarget(
+        target1,
+        projectRoot: tempDir.path,
+        dependencies: [sharedDep.path],
+      );
+
+      expect(cache.cachedFileCount, equals(1));
+
+      await cache.updateTarget(
+        target2,
+        projectRoot: tempDir.path,
+        dependencies: [sharedDep.path],
+      );
+
+      expect(cache.cachedFileCount, equals(1));
     });
   });
 }

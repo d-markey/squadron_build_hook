@@ -63,11 +63,14 @@ void main() {
 
       // 3. Create worker 2: ambiguous (two candidate entrypoints for exe)
       final w2Source = 'lib/services/service2.dart';
-      final s2File = File(path.join(tempDir.path, w2Source))
+      final s2File = File(path.join(tempDir.path, 'lib/workers/service2_worker_entrypoint.dart'))
         ..createSync(recursive: true)
-        ..writeAsStringSync('void main() { runWorkerProcess(); }'); // candidate 1 (locateByEndpointUsage)
+        ..writeAsStringSync(
+            'import \'$w2Source\';'
+            'void main() { runWorkerProcess(); }'
+        ); // candidate 1 (locateByEndpointUsage)
       final s2Gen =
-          File(path.join(tempDir.path, 'lib/services/service2.vm.g.dart'))
+          File(path.join(tempDir.path, 'lib/workers/service2.vm.g.dart'))
             ..writeAsStringSync('void main() {}'); // candidate 2 (locateByNamingConventions)
 
       // 4. Create squadron.manifest.yaml

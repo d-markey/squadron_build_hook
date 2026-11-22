@@ -136,7 +136,10 @@ workers:
         final initialDir = Directory.current;
         try {
           Directory.current = tempDir;
-          final result = await runStandalone(registry: registry);
+          final result = await runStandalone(
+            registry: registry,
+            logger: getLogger(tag: 'nul', log: (_) {}),
+          );
           expect(result.success, isTrue);
           expect(fakeBackend.compileCallCount, equals(1));
         } finally {

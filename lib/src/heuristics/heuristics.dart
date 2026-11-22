@@ -2,9 +2,9 @@ import 'dart:io';
 
 import 'package:path/path.dart' as path;
 
-import 'dart_file_analysis.dart';
-import 'manifest.dart';
-import 'utils.dart';
+import '../dart_file_analysis.dart';
+import '../manifest.dart';
+import '../utils.dart';
 
 part 'heuristics_by_entry_point.dart';
 part 'heuristics_by_naming_convention.dart';

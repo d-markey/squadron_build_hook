@@ -1,6 +1,4 @@
 import 'backends/compiler_registry.dart';
-import 'backends/exe_backend.dart';
-import 'backends/js_backend.dart';
 import 'utils.dart';
 
 class WorkerCompiler {
@@ -31,30 +29,6 @@ class WorkerCompiler {
       depfile: depfile,
       logger: logger,
     );
-  }
-
-  /// Parses a depfile produced by [compiler] (or auto-detected):
-  /// - 'js' (dart2js .deps): line-delimited URIs / file paths.
-  /// - 'wasm' / 'exe': Makefile/Ninja format (`<target>: <dep1> <dep2> ...`).
-  /// Handles Windows drive letters, backslash-escaped newlines, spaces, and path separators.
-  static List<String> parseDepfile(
-    String content, {
-    String? compiler,
-    String? projectRoot,
-    CompilerRegistry? registry,
-  }) {
-    final reg = registry ?? CompilerRegistry.defaultRegistry;
-    final backend = compiler != null ? reg.get(compiler) : null;
-    if (backend != null) {
-      return backend.parseDepfile(content, projectRoot);
-    }
-    // Fallback auto-detection if compiler is null or not found
-    final isJs = content.trimLeft().split('\n').first.trim().startsWith('file://');
-    if (isJs) {
-      return const JsCompilerBackend().parseDepfile(content, projectRoot);
-    } else {
-      return const ExeCompilerBackend().parseDepfile(content, projectRoot);
-    }
   }
 }
 

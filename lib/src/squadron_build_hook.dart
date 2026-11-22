@@ -9,7 +9,7 @@ import 'backends/compiler_registry.dart';
 import 'build_cache.dart';
 import 'compiler.dart';
 import 'dart_file_analysis.dart';
-import 'heuristics.dart';
+import 'heuristics/heuristics.dart';
 import 'manifest.dart';
 import 'utils.dart';
 

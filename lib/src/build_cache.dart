@@ -7,22 +7,13 @@ import 'manifest.dart';
 import 'utils.dart';
 
 /// 64-bit FNV-1a content hashing for files and byte sequences.
-int computeBytesHash(List<int> bytes) {
+int _computeBytesHash(List<int> bytes) {
   int hash = -3750763034362895579; // 14695981039346656037 in signed 64-bit int
   for (final b in bytes) {
     hash ^= b;
     hash = (hash * 1099511628211);
   }
   return hash;
-}
-
-Future<int> computeFileHash(File file) async {
-  if (!await file.exists()) return 0;
-  try {
-    return computeBytesHash(await file.readAsBytes());
-  } catch (_) {
-    return 0;
-  }
 }
 
 class TargetCacheEntry {
@@ -88,10 +79,57 @@ class TargetCacheEntry {
       };
 }
 
+class _FileHashEntry {
+  _FileHashEntry(this.hash, this.modified, this.size);
+  final int hash;
+  final DateTime modified;
+  final int size;
+}
+
 class BuildCache {
   BuildCache({
     Map<String, TargetCacheEntry>? targets,
-  }) : targets = targets ?? {};
+  })  : targets = targets ?? {},
+        _fileHashCache = {};
+
+  final Map<String, TargetCacheEntry> targets;
+  final Map<String, _FileHashEntry> _fileHashCache;
+  final Map<String, Future<int>> _inFlightHashes = {};
+
+  int get cachedFileCount => _fileHashCache.length;
+
+  Future<int> computeFileHash(File file, [String? projectRoot]) async {
+    final normPath = normalizePath(file.path, projectRoot);
+    final inFlightHash = _inFlightHashes[normPath];
+    if (inFlightHash != null) return inFlightHash;
+
+    final future = (() async {
+      try {
+        final stat = await file.stat();
+        if (stat.type == FileSystemEntityType.notFound) return 0;
+
+        final cached = _fileHashCache[normPath];
+        if (cached != null &&
+            cached.modified.isAtSameMomentAs(stat.modified) &&
+            cached.size == stat.size) {
+          return cached.hash;
+        }
+
+        final bytes = await file.readAsBytes();
+        final hash = _computeBytesHash(bytes);
+        _fileHashCache[normPath] =
+            _FileHashEntry(hash, stat.modified, stat.size);
+        return hash;
+      } catch (_) {
+        return 0;
+      } finally {
+        _inFlightHashes.remove(normPath);
+      }
+    })();
+
+    _inFlightHashes[normPath] = future;
+    return future;
+  }
 
   factory BuildCache.fromJson(Map<String, dynamic> json) {
     final rawTargets = json['targets'] as Map<String, dynamic>? ?? {};
@@ -109,8 +147,6 @@ class BuildCache {
     }
     return BuildCache(targets: targetsMap);
   }
-
-  final Map<String, TargetCacheEntry> targets;
 
   static String cacheFilePath(String projectRoot) => path.normalize(
         path.join(projectRoot, '.dart_tool', 'squadron_build_hook',
@@ -194,7 +230,7 @@ class BuildCache {
       logger?.log('Cache miss: output file does not exist: ${outFile.path}');
       return false;
     }
-    if (await computeFileHash(outFile) != entry.outputHash) {
+    if (await computeFileHash(outFile, projectRoot) != entry.outputHash) {
       logger?.log('Cache miss: output file hash mismatch');
       return false;
     }
@@ -211,7 +247,7 @@ class BuildCache {
             'Cache miss: dependency file does not exist: ${depEntry.key}');
         return false;
       }
-      if (await computeFileHash(depFile) != depEntry.value) {
+      if (await computeFileHash(depFile, projectRoot) != depEntry.value) {
         logger?.log(
             'Cache miss: dependency file hash mismatch: ${depEntry.key}');
         return false;
@@ -229,14 +265,14 @@ class BuildCache {
     final targetKey = normalizePath(target.output, projectRoot);
     final outFile = File(normalizePath(target.output, projectRoot));
     final outputHash =
-        await outFile.exists() ? await computeFileHash(outFile) : 0;
+        await outFile.exists() ? await computeFileHash(outFile, projectRoot) : 0;
 
     final depHashes = <String, int>{};
     for (final dep in dependencies) {
       final normPath = normalizePath(dep, projectRoot);
       final depFile = File(normPath);
       if (await depFile.exists()) {
-        depHashes[normPath] = await computeFileHash(depFile);
+        depHashes[normPath] = await computeFileHash(depFile, projectRoot);
       }
     }
 
