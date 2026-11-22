@@ -54,7 +54,7 @@ void main() {
 
       // 2. Create worker 1: unambiguous
       final w1Source = 'lib/services/service1.dart';
-      final s1File = File(path.join(tempDir.path, w1Source))
+      File(path.join(tempDir.path, w1Source))
         ..createSync(recursive: true)
         ..writeAsStringSync('class Service1 {}');
       final s1Gen =
@@ -63,15 +63,14 @@ void main() {
 
       // 3. Create worker 2: ambiguous (two candidate entrypoints for exe)
       final w2Source = 'lib/services/service2.dart';
-      final s2File = File(path.join(tempDir.path, 'lib/workers/service2_worker_entrypoint.dart'))
+      File(path.join(tempDir.path, 'lib/workers/service2_worker_entrypoint.dart'))
         ..createSync(recursive: true)
         ..writeAsStringSync(
             'import \'$w2Source\';'
             'void main() { runWorkerProcess(); }'
         ); // candidate 1 (locateByEndpointUsage)
-      final s2Gen =
-          File(path.join(tempDir.path, 'lib/workers/service2.vm.g.dart'))
-            ..writeAsStringSync('void main() {}'); // candidate 2 (locateByNamingConventions)
+      File(path.join(tempDir.path, 'lib/workers/service2.vm.g.dart'))
+        ..writeAsStringSync('void main() {}'); // candidate 2 (locateByNamingConventions)
 
       // 4. Create squadron.manifest.yaml
       File(path.join(tempDir.path, 'squadron.manifest.yaml'))

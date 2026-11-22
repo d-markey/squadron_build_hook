@@ -7,11 +7,6 @@ import 'package:path/path.dart' as path;
 import 'package:test/test.dart';
 
 import 'package:squadron_build_hook/squadron_build_hook.dart';
-import 'package:squadron_build_hook/src/backends/compiler_backend.dart';
-import 'package:squadron_build_hook/src/backends/compiler_registry.dart';
-import 'package:squadron_build_hook/src/backends/exe_backend.dart';
-import 'package:squadron_build_hook/src/backends/js_backend.dart';
-import 'package:squadron_build_hook/src/backends/wasm_backend.dart';
 
 class FakeCompilerBackend extends CompilerBackend {
   FakeCompilerBackend(this.name, {this.supportsDepfileArg = true});

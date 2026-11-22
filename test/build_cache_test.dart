@@ -50,7 +50,7 @@ void main() {
         ..createSync(recursive: true)
         ..writeAsStringSync('void main() {}');
 
-      final outFile = File(path.join(tempDir.path, 'web/worker.js'))
+      File(path.join(tempDir.path, 'web/worker.js'))
         ..createSync(recursive: true)
         ..writeAsStringSync('// compiled js');
 
