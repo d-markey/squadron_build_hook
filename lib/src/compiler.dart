@@ -1,15 +1,16 @@
-import 'dart:async';
-import 'dart:convert';
-import 'dart:io';
-
-import 'package:path/path.dart' as path;
-
+import 'backends/compiler_registry.dart';
+import 'backends/exe_backend.dart';
+import 'backends/js_backend.dart';
 import 'utils.dart';
 
 class WorkerCompiler {
-  WorkerCompiler({required this.projectRoot});
+  WorkerCompiler({
+    required this.projectRoot,
+    CompilerRegistry? registry,
+  }) : registry = registry ?? CompilerRegistry.defaultRegistry;
 
   final String projectRoot;
+  final CompilerRegistry registry;
 
   Future<CompilationResult> compile({
     required String compiler,
@@ -20,86 +21,15 @@ class WorkerCompiler {
     String? depfile,
     required BuildLogger logger,
   }) async {
-    final resolvedSource = _resolvePath(source);
-    final resolvedOutput = _resolvePath(output);
-
-    // Ensure output directory exists
-    final outDir = Directory(path.dirname(resolvedOutput));
-    await outDir.create(recursive: true);
-
-    // 'exe' and 'wasm' support `--depfile=<path>`, while 'js' does not
-    final supportsDepfileArg = compiler == 'exe' || compiler == 'wasm';
-    final resolvedDepfile = depfile != null
-        ? _resolvePath(depfile)
-        : (compiler == 'js' ? '$resolvedOutput.deps' : '$resolvedOutput.d');
-
-    final depDir = Directory(path.dirname(resolvedDepfile));
-    await depDir.create(recursive: true);
-
-    // Process defines: add 'squadron.' prefix unless key starts with '$' (verbatim)
-    final defineArgs = <String>[];
-    if (defines != null) {
-      for (final entry in defines.entries) {
-        if (entry.key.startsWith(r'$')) {
-          defineArgs.add('-D${entry.key.substring(1)}=${entry.value}');
-        } else {
-          defineArgs.add('-Dsquadron.${entry.key}=${entry.value}');
-        }
-      }
-    }
-
-    final optimLvl = optimizationLevel.trim().isEmpty
-        ? OptimizationLevel.safe
-        : optimizationLevel;
-
-    final args = [
-      'compile',
-      compiler,
-      if (compiler != 'exe') '-O$optimLvl',
-      if (supportsDepfileArg) '--depfile=$resolvedDepfile',
-      resolvedSource,
-      '-o',
-      resolvedOutput,
-      ...defineArgs,
-    ];
-
-    logger.log('*** dart ${args.join(' ')}');
-    final process = await Process.start(
-      'dart',
-      args,
-      workingDirectory: projectRoot,
-      runInShell: true,
-      includeParentEnvironment: true,
-    );
-
-    final (:exitCode, :outputLines) = await process.result;
-    final dependencies = <String>[];
-
-    if (exitCode == 0) {
-      logger.log('* $resolvedSource --> $resolvedOutput: success');
-      final depFileObj = File(resolvedDepfile);
-      if (await depFileObj.exists()) {
-        try {
-          final content = await depFileObj.readAsString();
-          dependencies.addAll(parseDepfile(
-            content,
-            compiler: compiler,
-            projectRoot: projectRoot,
-          ));
-        } catch (e) {
-          logger.log('Warning: Failed to parse depfile $resolvedDepfile: $e');
-        }
-      }
-    } else {
-      logger.log('* $resolvedSource --> $resolvedOutput: error $exitCode');
-      outputLines.map((l) => '   $l').forEach(logger.log);
-    }
-
-    return CompilationResult(
-      exitCode: exitCode,
-      dependencies: dependencies,
-      outputLines: outputLines,
-      depfilePath: resolvedDepfile,
+    final backend = registry[compiler];
+    return await backend.compile(
+      projectRoot: projectRoot,
+      source: source,
+      output: output,
+      optimizationLevel: optimizationLevel,
+      defines: defines,
+      depfile: depfile,
+      logger: logger,
     );
   }
 
@@ -111,80 +41,21 @@ class WorkerCompiler {
     String content, {
     String? compiler,
     String? projectRoot,
+    CompilerRegistry? registry,
   }) {
-    final deps = <String>[];
-    if (content.trim().isEmpty) return deps;
-
-    final isJs = compiler == 'js' ||
-        (compiler == null &&
-            content.trimLeft().split('\n').first.trim().startsWith('file://'));
-
+    final reg = registry ?? CompilerRegistry.defaultRegistry;
+    final backend = compiler != null ? reg.get(compiler) : null;
+    if (backend != null) {
+      return backend.parseDepfile(content, projectRoot);
+    }
+    // Fallback auto-detection if compiler is null or not found
+    final isJs = content.trimLeft().split('\n').first.trim().startsWith('file://');
     if (isJs) {
-      for (final rawLine in const LineSplitter().convert(content)) {
-        final line = rawLine.trim();
-        if (line.isEmpty) continue;
-        deps.add(_normalizeDepPath(line, projectRoot));
-      }
-      return deps;
+      return const JsCompilerBackend().parseDepfile(content, projectRoot);
+    } else {
+      return const ExeCompilerBackend().parseDepfile(content, projectRoot);
     }
-
-    final normalized = content.replaceAll(RegExp(r'\\(?:\r?\n|\r)'), ' ');
-    final match = RegExp(r'(?<!\\):\s+').firstMatch(normalized);
-    final rhs = match != null
-        ? normalized.substring(match.end).trim()
-        : normalized.trim();
-    if (rhs.isEmpty) return deps;
-
-    final sb = StringBuffer();
-    for (int i = 0; i < rhs.length; i++) {
-      final c = rhs[i];
-      if (c == '\\' && i + 1 < rhs.length) {
-        final next = rhs[i + 1];
-        if (next == ' ' || next == '\t') {
-          sb.write(next);
-          i++;
-        } else if (next == '\\') {
-          sb.write('\\');
-          i++;
-        } else if (next == ':') {
-          sb.write(':');
-          i++;
-        } else {
-          sb.write('\\');
-        }
-      } else if (c == ' ' || c == '\t' || c == '\r' || c == '\n') {
-        if (sb.isNotEmpty) {
-          deps.add(_normalizeDepPath(sb.toString(), projectRoot));
-          sb.clear();
-        }
-      } else {
-        sb.write(c);
-      }
-    }
-    if (sb.isNotEmpty) {
-      deps.add(_normalizeDepPath(sb.toString(), projectRoot));
-    }
-
-    return deps;
   }
-
-  static String _normalizeDepPath(String p, String? projectRoot) {
-    var clean = p.trim();
-    if ((clean.startsWith('"') && clean.endsWith('"')) ||
-        (clean.startsWith("'") && clean.endsWith("'"))) {
-      clean = clean.substring(1, clean.length - 1).trim();
-    }
-    if (clean.startsWith('file://')) {
-      clean = Uri.parse(clean).toFilePath();
-    }
-    if (projectRoot != null && !path.isAbsolute(clean)) {
-      clean = path.normalize(path.join(projectRoot, clean));
-    }
-    return clean;
-  }
-
-  String _resolvePath(String p) =>
-      path.isAbsolute(p) ? p : path.join(projectRoot, p);
 }
 
 class CompilationResult {

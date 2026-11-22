@@ -1,3 +1,13 @@
+## 0.2.0
+
+- **Per-Worker Content Hash Caching**: Implemented a robust persistent per-worker and per-target build cache (`.dart_tool/squadron_build_hook/build_cache.json`) using fast 64-bit FNV-1a content hashing of source files and dependency trees. Unchanged worker targets are automatically skipped during builds, drastically improving incremental build speed.
+- Refactored compiler architecture into modular backends located in `lib/src/backends`:
+  - Pure `CompilerBackend` interface (`compiler_backend.dart`).
+  - `DartCompilerBackend` abstract base class handling shared compilation process execution and Makefile/Ninja `.d` depfile parsing.
+  - Concrete backend implementations for `exe`, `wasm`, and `js`.
+- Introduced `CompilerRegistry` to manage and provide compiler backends.
+- Added optional `CompilerRegistry` support to build and run methods (`runStandalone`, `runSquadronBuildHook`, `WorkerCompiler`), enabling easy testability with fake/mock compiler backends.
+
 ## 0.1.0
 
 - Initial release of `squadron_build_hook`.

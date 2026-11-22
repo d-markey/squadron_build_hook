@@ -3,12 +3,25 @@ library;
 
 import 'dart:io';
 
+import 'package:path/path.dart' as path;
 import 'package:test/test.dart';
 
 import '../lib/src/dart_file_analysis.dart';
 
 void main() {
   group('DartFileAnalysis', () {
+    late Directory tempDir;
+
+    setUp(() async {
+      tempDir = await Directory.systemTemp.createTemp('dart_file_analysis_test_');
+    });
+
+    tearDown(() async {
+      if (tempDir.existsSync()) {
+        await tempDir.delete(recursive: true);
+      }
+    });
+
     test('extracts standard and conditional imports', () async {
       final code = '''
 import 'dart:io';
@@ -23,25 +36,21 @@ void main() {
 }
 ''';
 
-      final file = File('test_sample_analysis.dart');
+      final file = File(path.join(tempDir.path, 'test_sample_analysis.dart'));
       file.writeAsStringSync(code);
-      try {
-        final analysis = await DartFileAnalysis.analyze(file);
-        expect(
-            analysis.imports,
-            equals([
-              'dart:io',
-              'package:squadron/squadron.dart',
-              'impl_vm.dart',
-              'impl_web.dart',
-              'impl_legacy.dart',
-            ]));
-        expect(analysis.exports, equals(['exports/public_api.dart']));
-        expect(analysis.parts, equals(['worker.g.dart']));
-        expect(analysis.hasMain, isTrue);
-      } finally {
-        if (file.existsSync()) file.deleteSync();
-      }
+      final analysis = await DartFileAnalysis.analyze(file);
+      expect(
+          analysis.imports,
+          equals([
+            'dart:io',
+            'package:squadron/squadron.dart',
+            'impl_vm.dart',
+            'impl_web.dart',
+            'impl_legacy.dart',
+          ]));
+      expect(analysis.exports, equals(['exports/public_api.dart']));
+      expect(analysis.parts, equals(['worker.g.dart']));
+      expect(analysis.hasMain, isTrue);
     });
 
     test('detects main variants: void, Future, async, arrow functions',
@@ -58,19 +67,17 @@ void main() {
         'class Foo { void main() {} }': false,
       };
 
+      int i = 0;
       for (final entry in cases.entries) {
-        final file = File('test_sample_main.dart');
+        final file = File(path.join(tempDir.path, 'test_sample_main_$i.dart'));
         file.writeAsStringSync(entry.key);
-        try {
-          final analysis = await DartFileAnalysis.analyze(file);
-          expect(
-            analysis.hasMain,
-            equals(entry.value),
-            reason: 'Failed for case: ${entry.key}',
-          );
-        } finally {
-          if (file.existsSync()) file.deleteSync();
-        }
+        final analysis = await DartFileAnalysis.analyze(file);
+        expect(
+          analysis.hasMain,
+          equals(entry.value),
+          reason: 'Failed for case: ${entry.key}',
+        );
+        i++;
       }
     });
 
@@ -92,29 +99,22 @@ void notMain() {
 void main() {
 }
 ''';
-      final file = File('test_sample_escape.dart');
+      final file = File(path.join(tempDir.path, 'test_sample_escape.dart'));
       file.writeAsStringSync(code);
-      try {
-        final analysis = await DartFileAnalysis.analyze(file);
-        expect(
-            analysis.imports, equals(['package:foo/foo.dart?query=1;query=2']));
-        expect(analysis.hasMain, isTrue);
-      } finally {
-        if (file.existsSync()) file.deleteSync();
-      }
+      final analysis = await DartFileAnalysis.analyze(file);
+      expect(
+          analysis.imports, equals(['package:foo/foo.dart?query=1;query=2']));
+      expect(analysis.hasMain, isTrue);
     });
 
     test('DartFileAnalyzer caches analysis results across calls', () async {
       final code = 'void main() {}';
-      final file = File('test_sample_cache.dart')..writeAsStringSync(code);
-      try {
-        final analyzer = DartFileAnalyzer();
-        final analysis1 = await analyzer.analyze(file);
-        final analysis2 = await analyzer.analyze(file);
-        expect(identical(analysis1, analysis2), isTrue);
-      } finally {
-        if (file.existsSync()) file.deleteSync();
-      }
+      final file = File(path.join(tempDir.path, 'test_sample_cache.dart'))
+        ..writeAsStringSync(code);
+      final analyzer = DartFileAnalyzer();
+      final analysis1 = await analyzer.analyze(file);
+      final analysis2 = await analyzer.analyze(file);
+      expect(identical(analysis1, analysis2), isTrue);
     });
   });
 }

@@ -65,10 +65,10 @@ void main() {
       final w2Source = 'lib/services/service2.dart';
       final s2File = File(path.join(tempDir.path, w2Source))
         ..createSync(recursive: true)
-        ..writeAsStringSync('void main() {}'); // candidate 1
+        ..writeAsStringSync('void main() { runWorkerProcess(); }'); // candidate 1 (locateByEndpointUsage)
       final s2Gen =
           File(path.join(tempDir.path, 'lib/services/service2.vm.g.dart'))
-            ..writeAsStringSync('void main() {}'); // candidate 2
+            ..writeAsStringSync('void main() {}'); // candidate 2 (locateByNamingConventions)
 
       // 4. Create squadron.manifest.yaml
       File(path.join(tempDir.path, 'squadron.manifest.yaml'))
@@ -81,7 +81,6 @@ workers:
   - source: $w2Source
     targets:
       - compiler: exe
-        source: non_existing_file.dart
 ''');
 
       final initialDir = Directory.current;
@@ -104,6 +103,71 @@ workers:
         expect(
             logs.any((l) => l.contains('Total associated targets: 2')), isTrue);
         expect(logs.any((l) => l.contains('Workers not compiled')), isTrue);
+      } finally {
+        Directory.current = initialDir;
+      }
+    });
+
+    test('standalone build caches dependencies and skips up-to-date targets on 2nd run', () async {
+      File(path.join(tempDir.path, 'pubspec.yaml'))
+          .writeAsStringSync('name: test_pkg\nenvironment:\n  sdk: ^3.4.0\n');
+
+      final wSource = 'lib/services/service1.dart';
+      final sFile = File(path.join(tempDir.path, wSource))
+        ..createSync(recursive: true)
+        ..writeAsStringSync('class Service1 {}');
+      final sGen =
+          File(path.join(tempDir.path, 'lib/services/service1.vm.g.dart'))
+            ..writeAsStringSync(
+                "import 'service1.dart';\nvoid main() { final _ = Service1(); }");
+      final outFile =
+          File(path.join(tempDir.path, 'bin/workers/service1.vm.g.dart.exe'));
+
+      File(path.join(tempDir.path, 'squadron.manifest.yaml'))
+          .writeAsStringSync('''
+workers:
+  - source: $wSource
+    targets:
+      - compiler: exe
+        source: ${path.relative(sGen.path, from: tempDir.path)}
+        output: ${path.relative(outFile.path, from: tempDir.path)}
+''');
+
+      final initialDir = Directory.current;
+      try {
+        Directory.current = tempDir;
+
+        // --- FIRST RUN ---
+        final logs1 = <String>[];
+        final logger1 = getLogger(tag: 'RUN1', log: (line) => logs1.add(line));
+        final result1 = await runStandalone(logger: logger1);
+
+        expect(result1.success, isTrue);
+        expect(result1.compiledTargets, equals(1));
+        expect(logs1.any((l) => l.contains('Compiling [exe]')), isTrue);
+        expect(outFile.existsSync(), isTrue);
+
+        // --- SECOND RUN (Unchanged) ---
+        final logs2 = <String>[];
+        final logger2 = getLogger(tag: 'RUN2', log: (line) => logs2.add(line));
+        final result2 = await runStandalone(logger: logger2);
+
+        expect(result2.success, isTrue);
+        expect(result2.compiledTargets, equals(1));
+        expect(logs2.any((l) => l.contains('is up-to-date (skipped)')), isTrue);
+
+        // --- THIRD RUN (Modify source) ---
+        sFile.writeAsStringSync('class Service1 { final int x = 1; }');
+
+        final logs3 = <String>[];
+        final logger3 = getLogger(tag: 'RUN3', log: (line) => logs3.add(line));
+        final result3 = await runStandalone(logger: logger3);
+
+        expect(result3.success, isTrue);
+        expect(result3.compiledTargets, equals(1));
+        expect(logs3.any((l) => l.contains('Compiling [exe]')), isTrue);
+        expect(result3.compiledTargets, equals(1));
+        expect(logs3.any((l) => l.contains('Compiling [exe]')), isTrue);
       } finally {
         Directory.current = initialDir;
       }

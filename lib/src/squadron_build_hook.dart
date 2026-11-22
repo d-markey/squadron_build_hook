@@ -5,6 +5,8 @@ import 'package:hooks/hooks.dart';
 import 'package:path/path.dart' as path;
 import 'package:synchronize/synchronize.dart';
 
+import 'backends/compiler_registry.dart';
+import 'build_cache.dart';
 import 'compiler.dart';
 import 'dart_file_analysis.dart';
 import 'heuristics.dart';
@@ -46,7 +48,9 @@ class WorkerResolutionResult {
 
 Future<StandaloneBuildResult> runStandalone({
   int concurrency = 2,
+  bool force = false,
   BuildLogger? logger,
+  CompilerRegistry? registry,
 }) async {
   final mainLogger = logger ?? getLogger();
   final pckRoot = await SquadronManifest.findPackageRoot();
@@ -64,8 +68,9 @@ Future<StandaloneBuildResult> runStandalone({
   mainLogger.log(
       'Loaded ${manifest.workers.length} workers from ${path.basename(manifest.manifestFile.path)}.');
 
+  final cache = await BuildCache.load(pckRoot);
   final analyzer = DartFileAnalyzer();
-  final compiler = WorkerCompiler(projectRoot: pckRoot);
+  final compiler = WorkerCompiler(projectRoot: pckRoot, registry: registry);
   final semaphore = Semaphore(concurrency, maxCount: concurrency);
 
   int totalAssociatedTargets = 0;
@@ -73,7 +78,8 @@ Future<StandaloneBuildResult> runStandalone({
   final notCompiledWorkers = <String>[];
 
   Future<void> processWorker(WorkerDefinition worker) async {
-    final workerLogger = getLogger(tag: path.basename(worker.source));
+    final workerLogger =
+        getLogger(tag: path.basename(worker.source), log: mainLogger.log);
 
     final resolution = await _resolveWorkerTargets(
       worker,
@@ -89,6 +95,15 @@ Future<StandaloneBuildResult> runStandalone({
 
     if (!resolution.hasAmbiguity) {
       for (final target in resolution.targetsToCompile) {
+        if (!force &&
+            await cache.isTargetUpToDate(target,
+                projectRoot: pckRoot, logger: workerLogger)) {
+          workerLogger.log(
+              'Standalone: Target [${target.compiler}] ${target.source} -> ${target.output} is up-to-date (skipped)');
+          workerCompiledCount++;
+          continue;
+        }
+
         final lock = await semaphore.enter();
         try {
           workerLogger.log(
@@ -109,6 +124,24 @@ Future<StandaloneBuildResult> runStandalone({
             workerCompiledCount++;
             workerLogger.log(
                 'Standalone: Target produced ${result.dependencies.length} dependencies');
+            final targetDeps = <String>{};
+            if (result.dependencies.isNotEmpty) {
+              for (final dep in result.dependencies) {
+                _registerDependencyUri(dep, targetDeps);
+              }
+            } else {
+              await _registerSourceDependencies(
+                target.source,
+                projectRoot: pckRoot,
+                dependencies: targetDeps,
+                analyzer: analyzer,
+              );
+            }
+            await cache.updateTarget(
+              target,
+              projectRoot: pckRoot,
+              dependencies: targetDeps.toList(),
+            );
           }
         } catch (e) {
           compilationFailed = true;
@@ -138,6 +171,8 @@ Future<StandaloneBuildResult> runStandalone({
   // Launch all workers concurrently, regulated by the semaphore
   await Future.wait(manifest.workers.map(processWorker));
 
+  await cache.save(pckRoot);
+
   mainLogger.log('Standalone build summary:');
   mainLogger.log('  * Workers loaded: ${manifest.workers.length}');
   mainLogger.log('  * Total associated targets: $totalAssociatedTargets');
@@ -159,8 +194,13 @@ Future<StandaloneBuildResult> runStandalone({
   );
 }
 
-Future<void> runSquadronBuildHook(List<String> args,
-    {int concurrency = 2, BuildLogger? logger}) async {
+Future<void> runSquadronBuildHook(
+  List<String> args, {
+  int concurrency = 2,
+  bool force = false,
+  BuildLogger? logger,
+  CompilerRegistry? registry,
+}) async {
   await build(args, (input, output) async {
     final mainLogger = logger ?? getLogger();
     mainLogger.log('Squadron build hook started...');
@@ -183,13 +223,15 @@ Future<void> runSquadronBuildHook(List<String> args,
         'Loaded ${manifest.workers.length} workers from ${path.basename(manifest.manifestFile.path)}.');
 
     // 3. Compile workers: only run diagnostics when manifest is partial or wrong
+    final cache = await BuildCache.load(pckRoot);
     final analyzer = DartFileAnalyzer();
     final dependencies = <String>{};
-    final compiler = WorkerCompiler(projectRoot: pckRoot);
+    final compiler = WorkerCompiler(projectRoot: pckRoot, registry: registry);
     final semaphore = Semaphore(concurrency, maxCount: concurrency);
 
     Future<void> processWorker(WorkerDefinition worker) async {
-      final logger = getLogger(tag: path.basename(worker.source));
+      final logger =
+          getLogger(tag: path.basename(worker.source), log: mainLogger.log);
 
       final workerSrcFile = resolveFile(worker.source, pckRoot);
       if (workerSrcFile == null) {
@@ -222,6 +264,21 @@ Future<void> runSquadronBuildHook(List<String> args,
       }
 
       for (final target in resolution.targetsToCompile) {
+        if (!force &&
+            await cache.isTargetUpToDate(target,
+                projectRoot: pckRoot, logger: logger)) {
+          logger.log(
+              'Target [${target.compiler}] ${target.source} -> ${target.output} is up-to-date (skipped)');
+          final cachedDeps = cache.getTargetDependencies(
+            target,
+            projectRoot: pckRoot,
+          );
+          for (final dep in cachedDeps) {
+            _registerDependencyUri(dep, dependencies);
+          }
+          continue;
+        }
+
         final lock = await semaphore.enter();
         try {
           logger.log(
@@ -239,18 +296,26 @@ Future<void> runSquadronBuildHook(List<String> args,
                 'Failed to compile worker target [${target.compiler}] ${target.source} with exit code ${result.exitCode}');
           }
 
+          final targetDeps = <String>{};
           if (result.dependencies.isNotEmpty) {
             for (final dep in result.dependencies) {
-              _registerDependencyUri(dep, dependencies);
+              _registerDependencyUri(dep, targetDeps);
             }
           } else {
-            _registerSourceDependencies(
+            await _registerSourceDependencies(
               target.source,
               projectRoot: pckRoot,
-              dependencies: dependencies,
+              dependencies: targetDeps,
               analyzer: analyzer,
             );
           }
+
+          await cache.updateTarget(
+            target,
+            projectRoot: pckRoot,
+            dependencies: targetDeps.toList(),
+          );
+          dependencies.addAll(targetDeps);
         } finally {
           lock.release();
         }
@@ -259,6 +324,8 @@ Future<void> runSquadronBuildHook(List<String> args,
 
     // Launch all workers concurrently, regulated by the semaphore
     await Future.wait(manifest.workers.map(processWorker));
+
+    await cache.save(pckRoot);
 
     output.dependencies.addAll(dependencies.map(Uri.file));
 

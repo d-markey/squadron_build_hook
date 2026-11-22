@@ -13,7 +13,6 @@ Seamlessly targets **Browser** (JS & WASM) and **Desktop/Server** (Native execut
 
 [![Pub Package](https://img.shields.io/pub/v/squadron_build_hook)](https://pub.dev/packages/squadron_build_hook)
 [![Dart Platforms](https://badgen.net/pub/dart-platform/squadron_build_hook)](https://pub.dev/packages/squadron_build_hook)
-[![Flutter Platforms](https://badgen.net/pub/flutter-platform/squadron_build_hook)](https://pub.dev/packages/squadron_build_hook)
 
 [![Pub Points](https://img.shields.io/pub/points/squadron_build_hook)](https://pub.dev/packages/squadron_build_hook/score)
 [![Likes](https://img.shields.io/pub/likes/squadron_build_hook)](https://pub.dev/packages/squadron_build_hook/score)
@@ -42,7 +41,7 @@ Historically, developers had to manually orchestrate compilation scripts or buil
 * 🎯 **Multi-Platform Support**: Compiles workers to JavaScript (`js`), WebAssembly (`wasm`), and standalone native binaries (`exe`).
 * 🧠 **Diagnostic-Driven Heuristics**: Automatically infers and resolves worker companion entry points (`.web.g.dart`, `.vm.g.dart`, or scripts calling `runWorkerService` / `runWorkerProcess`) with ambiguity detection.
 * 📦 **Declarative Manifest (`squadron.manifest.yaml`)**: Centralize your worker compilation definitions, output paths, and compiler flags.
-* ⏱️ **Fast Incremental Builds**: Tracks compilation dependencies via `.d` and `.deps` files, invalidating build caches only when relevant source files change.
+* ⏱️ **Fast Incremental Builds**: Tracks per-worker compilation dependencies via `.d` and `.deps` depfiles combined with fast 64-bit FNV-1a content hashing (`.dart_tool/squadron_build_hook/build_cache.json`), automatically skipping unchanged workers to achieve near-instantaneous incremental builds.
 * 🚦 **Concurrency Management**: Regulates parallel compiler execution with built-in concurrency controls.
 * 💻 **Standalone CLI Mode**: Execute worker compilations independently via CLI without triggering a full application build.
 
@@ -100,7 +99,7 @@ dependencies:
   squadron: ^7.4.0
 
 dev_dependencies:
-  squadron_build_hook: ^0.1.0
+  squadron_build_hook: ^0.2.0
   squadron_builder: ^9.0.0 # for code generation
   build_runner:
 ```
